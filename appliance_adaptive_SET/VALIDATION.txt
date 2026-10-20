@@ -1,6 +1,0 @@
-Completed the self-contained notebook from top to bottom with zero cell errors.
-24 smoke runs: 2 architectures x 4 target columns x 3 methods, four epochs, seed 42.
-Five focused unit tests passed. Matching fixed/adaptive initial weights and masks were asserted.
-Exact-input overlaps removed in smoke split: 4 validation rows and 5 training rows.
-Retained: 123 training, 60 validation, 64 test rows.
-Full training has not been run; no research-performance claim is made.

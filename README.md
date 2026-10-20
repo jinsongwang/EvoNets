@@ -1,39 +1,42 @@
-# EvoNets: controlled sparse NILM classification
+# EvoNets
 
-This repository retains the original DNN/CNN, LASSO, group-LASSO (L21), SET, and LASSO+SET experiment families, with additional adaptive and structured sparse comparisons.
+Open [the notebook](SET_with_UKDALE_research.ipynb). Edit settings there and models in `research_set.py`.
 
-Start with [the executed research notebook](SET_with_UKDALE_research.ipynb), [setup instructions](README.txt), and [the experimental protocol](PROTOCOL.txt). Historical original and repaired notebooks are in [legacy/](legacy/).
+## Files
 
-## Notebooks
+- `SET_with_UKDALE_research.ipynb`: run and view experiments.
+- `research_set.py`: all models, training, and evaluation.
+- `test_research_set.py`: correctness tests.
+- `samX.csv`, `samY.csv`: input data and labels.
+- `results.csv`: all 288 saved pilot scores.
+- `requirements.txt`: Python dependencies.
 
-- [Repaired original experiments](SET_with_UKDALE_fixed.ipynb)
-- [Adaptive SET](appliance_adaptive_SET/SET_with_UKDALE_adaptive.ipynb)
-- [Research comparison](SET_with_UKDALE_research.ipynb)
+`README.md` and `.gitignore` complete the nine-file repository. Generated files stay in the ignored `runs/` folder. Older notebooks and detailed records remain in Git history.
 
-## Reproduce
+## Run
 
 ```sh
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python test_research_set.py
-.venv/bin/python research_set.py --mode smoke --data-dir . --out fresh_smoke
+.venv/bin/python research_set.py --mode smoke --data-dir . --out runs/smoke
 ```
 
-Open the notebook from the repository root to inspect the delivered pilot. `RUN_TRAINING=False` reads saved results; setting it to `True` runs or resumes the configured experiment. Generated models and individual run artifacts are excluded from Git and can be regenerated. The published results folder contains summary tables, figures, and configuration only.
+The notebook reads saved results by default. Set `RUN_TRAINING=True` to train. Modes: smoke (3 epochs, 1 seed), pilot (10 epochs, 3 seeds), full (50 epochs, 10 seeds and validation-only tuning).
 
-## Delivered evidence
+## Methods
 
-The developmental pilot completed **288 runs: 12 methods × 2 backbones × 4 label columns × 3 seeds**, ten epochs each, using 9,107 unique windows. Fourteen correctness tests passed. See [all results](pilot_results/metrics.csv), [the summary](pilot_results/RESULTS_SUMMARY.txt), and [paired uncertainty](pilot_results/paired_uncertainty.csv).
+All twelve methods remain: dense, LASSO, L21, static sparse, fixed SET, LASSO+SET, gradient SET, adaptive SET, adaptive gradient SET, adaptive structured SET, fixed group SET, and adaptive group SET. Both DNN and CNN backbones are supported. L21 groups incoming neuron weights and bias. Training uses dense tensors; compact export removes zero neurons and checks prediction equivalence.
 
-| Backbone | Fixed SET macro F1 | Adaptive structured + L21 macro F1 | Exported weight reduction |
+## Pilot results
+
+The saved pilot used 9,107 unique synthetic windows: 5,770 train, 1,474 validation, and 1,863 test. It completed 288 runs, ten epochs each, with seeds 11, 23 and 37. Settings, thresholds and computation measures are recorded in `results.csv`; detailed [original configuration](https://github.com/jinsongwang/EvoNets/blob/c7d672fe6fc9255c0b01b624d6280da3a939a946/pilot_results/config.json) remains in history. Consolidating files changes packaging, not those measured scores.
+
+| Backbone | Fixed SET macro F1 | Adaptive group SET macro F1 | Weight reduction |
 |---|---:|---:|---:|
 | DNN | 0.7971 | 0.7934 | 23.3% |
 | CNN | 0.8949 | 0.8917 | 21.4% |
 
-The pilot shows compression with small average F1 losses; it does not establish consistent accuracy superiority. All targets and negative comparisons are retained.
+Scores show compression with a small average F1 loss. Source-window and household independence are unverified. Three seeds provide limited statistical evidence. Training sparsity does not establish speedups. Full tuning, independent-house evaluation, and sensitivity studies remain incomplete; originality and Q1 readiness are not established.
 
-## Scientific limits
-
-These CSVs describe synthetic-window appliance-presence classification. Source-window and household independence are unverified. Full tuning, independent-house evaluation, and sensitivity sweeps have not been completed. The proposed combination has substantial prior art; methodological novelty, state-of-the-art performance, and Q1 publication readiness are **not established**. Read [related work](RELATED_WORK.txt), [statistical-power limitations](POWER_NOTE.txt), and [validation records](VALIDATION.txt).
-
-Training uses dense tensors. Native compact export removes inactive neurons and verifies prediction equivalence; logical nonzero connection counts alone do not imply runtime acceleration.
+SET, gradient regrowth and structured pruning have prior art: [SET](https://www.nature.com/articles/s41467-018-04316-3), [RigL](https://proceedings.mlr.press/v119/evci20a.html), and [structured sparse training](https://proceedings.iclr.cc/paper_files/paper/2024/hash/8c5f30296296d2ae402ebbd09aaa9c12-Abstract-Conference.html).

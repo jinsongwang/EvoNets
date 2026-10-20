@@ -15,7 +15,34 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
-from base_set import MaskedDense, initial_mask, classification_metrics, save_csv
+@keras.utils.register_keras_serializable(package='AdaptiveSET')
+class MaskedDense(layers.Layer):
+    def __init__(self, units=100, **kwargs):
+        super().__init__(**kwargs)
+        self.units = units
+    def build(self, shape):
+        self.kernel = self.add_weight(name='kernel', shape=(int(shape[-1]), self.units), initializer='glorot_uniform')
+        self.bias = self.add_weight(name='bias', shape=(self.units,), initializer='zeros')
+        self.mask = self.add_weight(name='mask', shape=self.kernel.shape, initializer='ones', trainable=False)
+    def call(self, inputs):
+        return tf.nn.relu(tf.matmul(inputs, self.kernel * self.mask) + self.bias)
+    def get_config(self):
+        return dict(super().get_config(), units=self.units)
+
+
+def initial_mask(shape, cfg, rng):
+    probability = min(1., cfg.epsilon * sum(shape)/np.prod(shape))
+    # Exact budget facilitates matching fixed/adaptive initial states.
+    count = int(round(probability*np.prod(shape)))
+    mask = np.zeros(int(np.prod(shape)), dtype=np.float32)
+    mask[rng.choice(len(mask),count,replace=False)] = 1
+    return mask.reshape(shape)
+
+
+def save_csv(path,rows):
+    with Path(path).open('w',newline='') as handle:
+        writer=csv.DictWriter(handle,fieldnames=list(rows[0]));writer.writeheader();writer.writerows(rows)
+
 
 METHODS=('dense','lasso','group_lasso','static_sparse','fixed_set','set_lasso',
          'gradient_set','adaptive_set','adaptive_gradient_set','adaptive_structured_set','fixed_group_set','adaptive_group_set')
@@ -523,7 +550,7 @@ def run_experiment(data_dir,out,cfg=None,metadata_path=None,resume=True):
     data=load_data(data_dir,cfg,metadata_path)
     configuration=dict(config=asdict(cfg),data=data['audit'],tensorflow=tf.__version__,
         python=sys.version,platform=platform.platform(),devices=[d.name for d in tf.config.list_physical_devices()],
-        source_sha256=sha_file(__file__),base_sha256=sha_file(Path(__file__).with_name('base_set.py')))
+        source_sha256=sha_file(__file__))
     config_path=out/'config.json'
     # Never mix old results with a changed protocol, data, or implementation.
     if config_path.exists() and json.loads(config_path.read_text())!=json.loads(json.dumps(configuration)):
@@ -562,7 +589,7 @@ if __name__=='__main__':
     parser.add_argument('--mode',choices=['smoke','pilot','full'],default='smoke')
     parser.add_argument('--data-dir',type=Path,required=True)
     parser.add_argument('--metadata',type=Path)
-    parser.add_argument('--out',type=Path,default=Path('research_smoke'))
+    parser.add_argument('--out',type=Path,default=Path('runs/smoke'))
     parser.add_argument('--epochs',type=int)
     parser.add_argument('--seeds',type=int,nargs='+')
     parser.add_argument('--architectures',choices=['DNN','CNN'],nargs='+')

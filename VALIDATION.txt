@@ -1,9 +1,0 @@
-Executed research notebook from top to bottom: zero cell errors.
-14 correctness tests passed.
-288 developmental pilot model runs completed: 12 methods x 2 backbones x 4 targets x 3 seeds, 10 epochs each.
-All 288 compact exports passed prediction-equivalence checks.
-288 selected native models, 288 prediction files, 288 epoch histories, 88 paired comparisons were verified.
-Initial paired weight hashes and recorded source hashes match.
-Vector and raster figures visually inspected.
-Full validation-only tuning, source-independent evaluation and optional sensitivity sweeps have not been executed.
-Q1/publication readiness and methodological novelty are not established.
