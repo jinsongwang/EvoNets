@@ -1,0 +1,25 @@
+Interpret uncertainty and p-values carefully
+
+The pilot has only three paired training seeds. An exact two-sided sign-flip
+test then has a minimum attainable p-value of 2/2^3 = 0.25. It cannot demonstrate
+p < 0.05, regardless of the observed effect. Report effect sizes and the
+conditional paired bootstrap interval; do not claim statistical significance.
+
+There are 88 candidate-vs-baseline comparisons in the twelve-method,
+eight-target/backbone table. The current report applies one conservative Holm
+family to all 88. With ten seeds, the minimum raw p is 2/2^10 = 0.001953125,
+so the first Holm comparison cannot pass 0.05/88. Thus the default ten-seed
+full setting is not sufficient for significance in this complete 88-test family.
+
+Before a genuinely confirmatory study, define a small primary hypothesis family
+and perform a power analysis using independent development data, or increase
+seeds. For example, fourteen seeds make rejection mathematically possible for
+88 tests (minimum p 2/2^14), but mathematical possibility is not adequate power.
+Sixteen or more may be needed, depending on effect size/variance. Source-group
+independence and realistic household variation matter more than seed counts.
+Do not change hypothesis families after looking at confirmatory outcomes.
+
+The bootstrap intervals also condition on the observed dataset and assumed
+grouping. Unknown source-window dependencies in the CSV-only pilot are not
+resolved by resampling more seeds. No Q1/publication claim is justified by
+these p-values, intervals, or a fixed seed count alone.

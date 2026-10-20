@@ -1,0 +1,10 @@
+/Users/work/Documents/Codex/2026-10-20/run/work/venv/lib/python3.12/site-packages/keras/src/backend/tensorflow/core.py:172: DeprecationWarning: __array__ implementation doesn't accept a copy keyword, so passing copy=False failed. __array__ must implement 'dtype' and 'copy' keyword arguments. To learn more, see the migration guide https://numpy.org/devdocs/numpy_2_0_migration_guide.html#adapting-to-changes-in-the-copy-keyword
+  return np.array(x)
+.............WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+W0000 00:00:1792472753.140653 8321338 cpu_utils.cc:145] Failed to get CPU frequency: 0 Hz
+W0000 00:00:1792472753.200522 8321338 op_level_cost_estimator.cc:743] Invalid device specifications for CPU: goo.gle/debugonly    type: "CPU" model: "0" num_cores: 18 environment { key: "cpu_instruction_set" value: "ARM NEON" } environment { key: "eigen" value: "3.5.0" } l1_cache_size: 16384 l2_cache_size: 524288 l3_cache_size: 524288 memory_size: 268435456
+.
+----------------------------------------------------------------------
+Ran 14 tests in 1.151s
+
+OK

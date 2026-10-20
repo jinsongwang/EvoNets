@@ -1,0 +1,7 @@
+tensorflow==2.21.0
+keras==3.15.1
+numpy==2.3.5
+matplotlib==3.11.2
+nbclient==0.11.0
+nbformat==5.11.1
+ipykernel==7.4.0

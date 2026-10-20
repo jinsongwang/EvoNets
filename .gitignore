@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+*.keras
+*.zip
+fresh_*/
+sensitivity_results/
+full_results/
+research_smoke/
+.DS_Store
+
+# Keep per-run artifacts local.
+pilot_results/*_history.csv
+pilot_results/*_predictions.npz
+pilot_results/*_run.json
+pilot_results/*_manifest.csv

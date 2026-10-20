@@ -1,0 +1,169 @@
+Controlled sparse learning for synthetic NILM appliance presence classification
+
+STATUS AND SCOPE
+This package strengthens the experiments. It does not establish journal novelty,
+Q1 acceptance, genuine energy-disaggregation performance, or cross-house accuracy.
+The proposed method is a candidate combination requiring comparison with prior
+adaptive/structured sparse methods. All results, including failures, are retained.
+This protocol was developed after examining developmental pilot/smoke results;
+it is not a preregistration. Freeze a fresh protocol before confirmatory tests.
+
+ORIGINAL EXPERIMENTS PRESERVED
+legacy/SET_with_UKDALE_original.ipynb is the supplied notebook, unchanged.
+legacy/SET_with_UKDALE_fixed.ipynb preserves its original experimental families
+with execution repairs: dense DNN/CNN, LASSO DNN/CNN, group-LASSO DNN/CNN,
+SET DNN/CNN, and LASSO SET-CNN. Historical embedded results in legacy files
+are not revalidated scientific findings.
+
+CONTROLLED COMPARISON
+1. dense: dense connectivity.
+2. lasso: Euclidean L1 soft thresholding after each Adam update.
+3. group_lasso: L21 shrinkage on incoming hidden-neuron groups, including bias.
+4. static_sparse: fixed random initial mask; no topology evolution.
+5. fixed_set: fixed-budget random SET regrowth.
+6. set_lasso: fixed-budget SET plus L1 soft thresholding.
+7. gradient_set: fixed-budget gradient-informed regrowth (RigL-inspired).
+8. adaptive_set: validation-controlled budgets plus random regrowth.
+9. adaptive_gradient_set: validation-controlled budgets plus gradient regrowth.
+10. adaptive_structured_set: adaptive gradient SET plus explicit neuron pruning.
+11. fixed_group_set: fixed-budget gradient SET plus neuron pruning and L21.
+12. adaptive_group_set: adaptive budgets, gradient regrowth, neuron pruning, L21.
+The new comparison uses the same backbones, data and training budget for all
+methods. Sparse methods start from matching weights and masks; initial-state
+hashes are asserted. Method execution order is seed-randomized to reduce timing
+order bias. L1/L21 placement and backbone details differ from the legacy models;
+this is intentional for a controlled study and is not an exact paper reproduction.
+
+BACKBONES
+DNN: Flatten, dropout 0.2, masked Dense(100, ReLU), Dense(20, ReLU), sigmoid.
+CNN: Conv1D(16,5,stride=2,ReLU), Conv1D(16,3,stride=2,ReLU), batch normalization,
+max pool 2, then the same dense head. The smaller CNN is used for a controlled,
+computationally feasible study; it is not claimed to be a state-of-the-art NILM
+architecture. The original CNN remains available in the legacy notebooks.
+All methods use Adam and binary cross-entropy. Binary-label MAE/Brier/MSE are
+classification quantities, not errors in reconstructed appliance power.
+
+L21 AND STRUCTURE
+For kernel W with neuron columns and bias b, the group norm is
+    sum_j sqrt(sum_i W_ij^2 + b_j^2).
+Each Euclidean proximal step multiplies a neuron column AND its bias by
+    max(0, 1 - learning_rate * lambda21 / group_norm).
+This is a proximal shrinkage heuristic after Adam, not a claim of convergence
+for an exact variable-metric proximal-Adam solver. Unlike L21 on a single-output
+kernel, these groups contain multiple weights. L1 and L21 default strengths
+are starting settings, not established optima.
+Explicit structured pruning is SEPARATE from L21 shrinkage. The allowed-neuron
+count is round(0.9 * H * sqrt(current_edge_budget / initial_edge_budget)),
+clipped to [8,H]. Rank neurons by the product of incoming and outgoing L2 norms.
+Mask pruned columns and set their biases to zero. This rule is a proposed design
+choice; ablations separate structural pruning, L21, regrowth and adaptation.
+Neuron-budget growth can reactivate previously dormant columns.
+
+DYNAMIC CONNECTIVITY
+Prune the smallest-magnitude weights separately by sign, plus additional weights
+if the budget shrinks. Refill by random candidates or largest absolute dense
+candidate gradients, evaluated on a TRAINING minibatch. Candidate gradients are
+computed at current sparse effective weights; the mask does not hide gradients
+of inactive candidate edges. Initialize newly enabled weights at Glorot scale.
+Keep the same model and optimizer across epochs. Preserve Adam moments on
+surviving edges; clear moments for removed/regrown edges.
+This is not an exact implementation of the RigL paper's schedule or full method.
+
+APPLIANCE-AWARE BUDGET CONTROL
+Each target/seed/backbone has an independent validation-BCE controller. Maintain
+the best observed validation BCE, consecutive acceptable/degraded epochs, and
+a cooldown. If BCE remains within 1% of its best value for the required patience,
+reduce the edge budget by 10%. If degradation persists, increase it by 10%.
+Clamp density to 2%-60%. Full mode uses a five-epoch warmup and patience three;
+pilot mode uses warmup three and patience two. This means awareness of target-
+specific predictive difficulty, not use of appliance-name metadata or engineering
+features. A broader novelty review and independent experiments remain necessary.
+
+SPLITS AND LEAKAGE CONTROL
+If source metadata is unavailable, use rows 0:2000 for test, 2000:3600 for
+validation, and 3600:end for training. Audit conflicting labels for identical
+inputs; stop on contradictions. Deduplicate within AND across splits, giving
+test priority, then validation, then training. This changes the estimand to
+unique synthetic windows. All normalization statistics come from training data.
+There are 9,107 unique inputs among 10,000 rows in the supplied CSVs. Exact
+deduplication does not prevent leakage from overlapping source appliance windows.
+
+Optional provenance CSV: one row per input CSV row, columns row_index,split,
+group_id. row_index is zero-based. split is train, validation or test. group_id
+must identify a scientifically defensible dependency group. The loader rejects
+any group appearing in multiple splits. Arbitrary row IDs are not independent
+source groups. For cross-house experiments, reconstruct mixtures from disjoint
+houses BEFORE aggregation; for temporal experiments, use disjoint source-time
+blocks with a gap at least as long as the windows. Verify these facts against
+raw source data rather than treating the group-disjoint assertion as proof.
+Raw source paths/metadata must be supplied before this phase can be completed.
+
+MODEL AND THRESHOLD SELECTION
+Record validation BCE and Pareto candidates in validation error, edge budget and
+neuron count. Choose the smallest candidate within absolute validation BCE 0.005
+of the minimum, with validation error as a tie break. Apply the same selection
+rule to all methods. Choose classification threshold by validation F1 on the
+fixed grid 0.05:0.01:0.95, tie-breaking toward 0.5. Never use test outcomes for
+checkpoint, threshold, regularization, budget, or hyperparameter selection.
+Report both threshold-selected F1 and F1 at 0.5 to expose threshold sensitivity.
+
+HYPERPARAMETER SEARCH
+Full mode uses three equal-budget validation-only random trials per method,
+target, backbone and seed, each trained for ten epochs, then reruns the selected
+setting at the full epoch budget before testing. Common learning-rate candidates
+are seeded equally across methods; L1/L21 strengths are sampled on log scales.
+Dense and sparse baselines receive the same trial count, even if they have fewer
+active hyperparameters. Search records include every trial. Pilot mode uses
+fixed defaults, so its comparisons are developmental rather than optimized.
+The search is deliberately small; a stronger study should expand the trial budget
+and test sensitivity to controller, topology and regularization settings.
+
+MODES
+smoke: three epochs, one seed, up to 128/64/64 unique train/validation/test rows.
+pilot: ten epochs, three seeds, all unique windows; no tuning.
+full: fifty epochs, ten seeds, all unique windows; three validation-only trials.
+Source independence must still be validated for full-mode scientific claims.
+
+METRICS AND UNCERTAINTY
+Report F1, accuracy, balanced accuracy, precision, recall, MCC, tie-aware AUROC,
+average precision, BCE, Brier score, ECE (ten fixed bins), and the confusion matrix.
+Paired hierarchical bootstrap resamples matched seeds and test dependency groups
+with replacement. Its 95% interval is conditional on the available dataset and
+meaning of those groups. It does not establish cross-house generalization.
+An exact seed-level sign-flip test is accompanied by Holm correction across all
+reported candidate/baseline/target/backbone comparisons. With three seeds,
+p-values are too coarse for strong significance claims; report effect sizes
+and intervals instead. The full protocol uses ten seeds.
+Robustness checks use identical Gaussian perturbations of 0.05 and 0.10 training-
+standard-deviation units for all methods and never adjust thresholds on test.
+These perturbations are not a substitute for real background loads or domain shift.
+
+DEPLOYMENT AND COMPUTATION
+All training tensors remain dense. Record topology/candidate-gradient overhead,
+training time, validation time and wall time separately. Candidate gradients can
+increase training cost; fewer enabled edges are not evidence of faster training.
+For EVERY method, export a native dense model with the effective masked weights
+and remove exactly zero hidden neurons AND corresponding next-layer rows. Verify
+all held-out predictions agree with the pre-export model to tight tolerances.
+Measure warmed native-model median and p95 batch latency; record batch size.
+Report actual stored model-variable bytes, native dense MACs, and logical active
+MACs separately. Unstructured zeros do not reduce native Dense MACs. Removing
+neurons can reduce physical dimensions and bytes. Mask removal benefits all
+methods equally. Costs exclude activation/pooling/BN arithmetic from MAC counts.
+No memory-peak or sparse-kernel training speed claim is made. Repeat timings on
+controlled hardware before reporting deployment acceleration.
+
+REPRODUCIBILITY AND RESUME
+Save input/source hashes, Python/TensorFlow/platform/device versions, split
+manifests, exact settings, all epoch histories, thresholds, predictions, compact
+models, tuning trials and metrics. Resuming is allowed only when the configuration,
+source hashes and data hashes match. A changed protocol requires a fresh output
+directory. Do not mix developmental and confirmatory results.
+
+PUBLICATION GAPS
+Verify raw-data provenance and independent splits; benchmark on measured aggregate
+signals and another household/dataset; establish appliance-column identity; compare
+with exact strong sparse baselines and appropriate modern NILM models; complete
+regularization/controller sensitivity and compute-matched comparisons; repeat
+hardware benchmarks; expand/verify related work and articulate what is actually
+new. Journal quartile and acceptance cannot be established by a code checklist.
