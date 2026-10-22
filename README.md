@@ -2,15 +2,16 @@
 
 Evolutionary Deep Nets for appliance-presence classification, adaptive sparsity, and joint F1–sparsity improvement.
 
-## Three code folders
+## Four folders
 
 | Folder | Purpose |
 | --- | --- |
 | `Evolutionary Deep Nets` | Original baseline notebook. |
 | `adaptive_sparsity` | Adaptive SET engine, protocol, notebook, tests, and historical pilot scores. |
 | `accuracy_improvement` | Gradual pruning, distillation, warm-start refinement, evaluation, and measured result summaries. |
+| `data and requirements` | Shared CSV inputs, label schema, dependencies, and ignore patterns. |
 
-The accuracy scripts import the shared engine from `adaptive_sparsity`; it is stored once. `samX.csv`, `samY.csv`, and `label_schema.json` are shared inputs. The Word paper is `paper.docx`.
+The accuracy scripts import the shared engine from `adaptive_sparsity`; it is stored once. `data and requirements/samX.csv`, `data and requirements/samY.csv`, and `data and requirements/label_schema.json` are shared inputs. Only this README stays at the repository root. The paper is excluded from the repository.
 
 ## Results in the paper
 
@@ -36,7 +37,7 @@ The policy uses width-80 refinement for T0–T2 and width-90 refinement for T3. 
 Use Python 3.11 or later. Run these commands from the repository root in a virtual environment:
 
 ```sh
-pip install -r requirements.txt
+pip install -r "data and requirements/requirements.txt"
 python -m unittest discover -s adaptive_sparsity -p 'test_*.py'
 python -m unittest discover -s accuracy_improvement -p 'test_*.py'
 ```
@@ -46,10 +47,10 @@ The two research notebooks show saved results by default. The original baseline 
 To reproduce the full CNN study in a fresh output directory:
 
 ```sh
-python accuracy_improvement/train_accuracy.py --data-dir . --out accuracy_improvement/runs/reproduction --epochs 50
-python accuracy_improvement/train_refine.py --data-dir . --out accuracy_improvement/runs/reproduction
-python accuracy_improvement/train_conservative.py --data-dir . --out accuracy_improvement/runs/reproduction
-python accuracy_improvement/evaluate_accuracy.py --data-dir . --out accuracy_improvement/runs/reproduction
+python accuracy_improvement/train_accuracy.py --data-dir "data and requirements" --out accuracy_improvement/runs/reproduction --epochs 50
+python accuracy_improvement/train_refine.py --data-dir "data and requirements" --out accuracy_improvement/runs/reproduction
+python accuracy_improvement/train_conservative.py --data-dir "data and requirements" --out accuracy_improvement/runs/reproduction
+python accuracy_improvement/evaluate_accuracy.py --data-dir "data and requirements" --out accuracy_improvement/runs/reproduction
 python accuracy_improvement/present_accuracy.py --run-dir accuracy_improvement/runs/reproduction --out accuracy_improvement/runs/reproduction/figures
 ```
 

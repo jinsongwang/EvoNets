@@ -7,3 +7,7 @@ venv/
 *.keras
 *.zip
 .DS_Store
+
+# Keep manuscript files out of shared inputs.
+*.docx
+*.pdf

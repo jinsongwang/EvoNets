@@ -14,7 +14,7 @@ class ProtocolTests(unittest.TestCase):
         keras.backend.clear_session();keras.utils.set_random_seed(7)
 
     def test_labels_are_intended_not_falsely_verified(self):
-        schema=load_label_schema(Path(__file__).parents[1])
+        schema=load_label_schema(Path(__file__).parents[1] / 'data and requirements')
         self.assertFalse(schema['source_verified'])
         self.assertEqual([r['name'] for r in schema['labels']],
                          ['washing machine','dishwasher','refrigerator','microwave'])

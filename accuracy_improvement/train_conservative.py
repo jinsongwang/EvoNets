@@ -15,7 +15,7 @@ from train_refine import refine
 from train_accuracy import save_csv
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--out',type=Path,required=True);p.add_argument('--data-dir',type=Path,default=Path('.'))
+ p=argparse.ArgumentParser();p.add_argument('--out',type=Path,required=True);p.add_argument('--data-dir',type=Path,default=Path(__file__).resolve().parents[1] / 'data and requirements')
  a=p.parse_args();out=a.out
  tf.config.threading.set_intra_op_parallelism_threads(4);tf.config.threading.set_inter_op_parallelism_threads(1)
  tf.config.experimental.enable_op_determinism()

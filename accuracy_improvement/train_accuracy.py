@@ -160,7 +160,7 @@ def train_one(method,target,seed,data,out,epochs=50,batch_size=128,teacher=None)
     return row
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--data-dir',type=Path,default=Path('.'))
+    parser=argparse.ArgumentParser();parser.add_argument('--data-dir',type=Path,default=Path(__file__).resolve().parents[1] / 'data and requirements')
     parser.add_argument('--out',type=Path,required=True);parser.add_argument('--epochs',type=int,default=50)
     parser.add_argument('--seeds',type=int,nargs='+',default=[11,23,37]);parser.add_argument('--targets',type=int,nargs='+',default=[0,1,2,3])
     args=parser.parse_args();out=args.out;out.mkdir(parents=True,exist_ok=True)

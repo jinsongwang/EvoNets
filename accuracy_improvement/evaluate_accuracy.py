@@ -154,5 +154,5 @@ def evaluate(folder,data_dir):
     print(json.dumps(summary,indent=2),flush=True)
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--out',type=Path,required=True);parser.add_argument('--data-dir',type=Path,default=Path('.'))
+    parser=argparse.ArgumentParser();parser.add_argument('--out',type=Path,required=True);parser.add_argument('--data-dir',type=Path,default=Path(__file__).resolve().parents[1] / 'data and requirements')
     args=parser.parse_args();evaluate(args.out,args.data_dir)
