@@ -6,7 +6,7 @@ Evolutionary Deep Nets for appliance-presence classification, adaptive sparsity,
 
 | Folder | Purpose |
 | --- | --- |
-| `Evolutionary Deep Nets` | Original baseline notebook. |
+| `Evolutionary Deep Nets` | baseline: SET, LASSO and group LASSO|
 | `adaptive_sparsity` | Adaptive SET engine, protocol, notebook, tests, and historical pilot scores. |
 | `accuracy_improvement` | Gradual pruning, distillation, warm-start refinement, evaluation, and measured result summaries. |
 | `data and requirements` | Shared CSV inputs, label schema, dependencies, and ignore patterns. |
