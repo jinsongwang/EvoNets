@@ -11,6 +11,7 @@ import sys
 import time
 import os
 os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL','2')
+from protocol import METRIC_PROTOCOL, load_label_schema, storage_accounting, macro_summary, paired_macro_statistics
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
@@ -44,7 +45,8 @@ def save_csv(path,rows):
         writer=csv.DictWriter(handle,fieldnames=list(rows[0]));writer.writeheader();writer.writerows(rows)
 
 
-METHODS=('dense','lasso','group_lasso','static_sparse','fixed_set','set_lasso',
+MATCHED={'matched_dense','matched_static_sparse','magnitude_prune'}
+METHODS=('matched_dense','matched_static_sparse','magnitude_prune','dense','lasso','group_lasso','static_sparse','fixed_set','set_lasso',
          'gradient_set','adaptive_set','adaptive_gradient_set','adaptive_structured_set','fixed_group_set','adaptive_group_set')
 DYNAMIC={'fixed_set','set_lasso','gradient_set','adaptive_set','adaptive_gradient_set','adaptive_structured_set','fixed_group_set','adaptive_group_set'}
 ADAPTIVE={'adaptive_set','adaptive_gradient_set','adaptive_structured_set','adaptive_group_set'}
@@ -56,7 +58,7 @@ class Config:
     epochs: int=3
     seeds: tuple=(42,)
     architectures: tuple=('DNN','CNN')
-    methods: tuple=METHODS
+    methods: tuple=tuple(m for m in METHODS if m not in MATCHED)
     targets: tuple=(0,1,2,3)
     batch_size: int=128
     learning_rate: float=.001
@@ -80,6 +82,12 @@ class Config:
     checkpoint_tolerance: float=.005
     search_trials: int=1
     search_epochs: int=10
+    matched_hidden: int=0
+    pruning_fraction: float=.5
+    compaction_rtol: float=1e-5
+    compaction_atol: float=2e-6
+    label_schema: str|None=None
+    require_verified_labels: bool=False
     @classmethod
     def pilot(cls):
         return cls(mode='pilot',epochs=10,seeds=(11,23,37),warmup_epochs=3,
@@ -112,6 +120,9 @@ def sha_file(path):
 
 def load_data(data_dir,cfg,metadata_path=None):
     data_dir=Path(data_dir)
+    label_schema=load_label_schema(data_dir,cfg.label_schema)
+    if cfg.require_verified_labels and not label_schema['source_verified']:
+        raise ValueError('Source-verified label mapping required; notebook plot names are only intended labels.')
     x=np.loadtxt(data_dir/'samX.csv',delimiter=',',skiprows=1,usecols=range(1,601),dtype=np.float32)
     y=np.loadtxt(data_dir/'samY.csv',delimiter=',',skiprows=1,usecols=range(1,5),dtype=np.float32)
     assert x.ndim==2 and x.shape[1]==600 and y.shape==(len(x),4)
@@ -163,7 +174,7 @@ def load_data(data_dir,cfg,metadata_path=None):
         assert all(0<y[indices,t].mean()<1 for t in cfg.targets), f'Missing class in {name}'
         data[name]=dict(x=((x[indices]-mean)/scale)[...,None],y=y[indices],indices=indices,
                         groups=groups[indices],input_hashes=fingerprints[indices])
-    data['audit']=dict(input_rows=len(x),unique_input_windows=len(set(fingerprints)),
+    data['audit']=dict(label_schema=label_schema,input_rows=len(x),unique_input_windows=len(set(fingerprints)),
         removed_duplicates=removed,counts={k:len(v) for k,v in clean.items()},
         positive_rates={k:y[v].mean(0).tolist() for k,v in clean.items()},mean=mean,scale=scale,
         samX_sha256=sha_file(data_dir/'samX.csv'),samY_sha256=sha_file(data_dir/'samY.csv'),
@@ -175,7 +186,7 @@ def load_data(data_dir,cfg,metadata_path=None):
 def build_model(architecture,cfg):
     inp=layers.Input((600,1));x=inp
     if architecture=='CNN':
-        # Compact controlled backbone; original architecture retained in legacy/.
+        # Compact controlled backbone; baseline architecture is in Evolutionary Deep Nets/.
         x=layers.Conv1D(cfg.conv_filters,5,strides=2,activation='relu',name='conv1')(x)
         x=layers.Conv1D(cfg.conv_filters,3,strides=2,activation='relu',name='conv2')(x)
         x=layers.BatchNormalization(name='bn')(x)
@@ -194,10 +205,10 @@ def f1_only(y,p,threshold=.5):
 
 def select_threshold(y,p):
     # Validation-only F1 selection; deterministic tie break nearest 0.5.
-    thresholds=np.unique(np.r_[np.linspace(.05,.95,91),.5])
+    thresholds=np.unique(np.r_[np.round(np.linspace(.05,.95,91),2),.5])
     scores=np.array([f1_only(y,p,t) for t in thresholds])
     best=np.flatnonzero(np.isclose(scores,scores.max(),rtol=0,atol=1e-12))
-    return float(thresholds[best[np.argmin(np.abs(thresholds[best]-.5))]])
+    return float(min(thresholds[best],key=lambda t:(round(abs(float(t)-.5),12),float(t))))
 
 def metrics(y,p,threshold=.5):
     y=np.asarray(y).reshape(-1).astype(bool);p=np.asarray(p).reshape(-1).astype(float)
@@ -253,6 +264,30 @@ def dense_growth_gradient(model,layer,x,y):
     assert gradient is not None
     return gradient.numpy()
 
+def reset_adam_slots(optimizer,variable,reset):
+    """Adam slot identity matters: other layers may have the same tensor shape."""
+    index=optimizer._get_variable_index(variable)
+    for name in ('_momentums','_velocities','_velocity_hats'):
+        slots=getattr(optimizer,name,None)
+        if slots is not None:
+            slot=slots[index];slot.assign(tf.where(reset,tf.zeros_like(slot),slot))
+
+
+def prune_columns(layer,next_layer,units,optimizer=None):
+    w=layer.kernel.numpy()*layer.mask.numpy();b=layer.bias.numpy()
+    # Standard magnitude/group-norm one-shot pruning, followed by fine tuning.
+    score=np.sqrt(np.sum(w*w,axis=0)+b*b)
+    allowed=np.zeros(w.shape[1],bool)
+    allowed[np.argsort(score,kind='stable')[-units:]]=True
+    mask=np.broadcast_to(allowed,w.shape)
+    layer.mask.assign(mask.astype('float32'));layer.kernel.assign(w*mask)
+    layer.bias.assign(b*allowed)
+    if optimizer is not None:
+        reset_adam_slots(optimizer,layer.kernel,~mask)
+        reset_adam_slots(optimizer,layer.bias,~allowed)
+    return allowed
+
+
 def rewire(layer,target_budget,rng,cfg,optimizer=None,gradient=None,allowed_columns=None):
     old=layer.mask.numpy().astype(bool);w=layer.kernel.numpy();core=old.copy()
     if allowed_columns is None:allowed_columns=np.ones(w.shape[1],bool)
@@ -281,9 +316,8 @@ def rewire(layer,target_budget,rng,cfg,optimizer=None,gradient=None,allowed_colu
     bias=layer.bias.numpy();bias[~allowed_columns]=0.;layer.bias.assign(bias)
     reset=(~mask|grown).reshape(w.shape)
     if optimizer is not None:
-        for variable in optimizer.variables:
-            if tuple(variable.shape)==tuple(w.shape):variable.assign(tf.where(reset,tf.zeros_like(variable),variable))
-            elif tuple(variable.shape)==tuple(bias.shape):variable.assign(tf.where(~allowed_columns,tf.zeros_like(variable),variable))
+        reset_adam_slots(optimizer,layer.kernel,reset)
+        reset_adam_slots(optimizer,layer.bias,~allowed_columns)
     assert int(layer.mask.numpy().sum())==target_budget
     assert np.all(layer.kernel.numpy()[layer.mask.numpy()==0]==0)
     return int(grown.sum())
@@ -344,14 +378,19 @@ def latency(infer,batch,repeats):
 
 def run_one(architecture,method,target,seed,data,cfg,out,validation_only=False):
     start_run=time.perf_counter();keras.backend.clear_session();keras.utils.set_random_seed(seed)
-    model=build_model(architecture,cfg);layer=model.get_layer('sparse_hidden');next_layer=model.get_layer('hidden2')
+    if method in MATCHED and not 1<=cfg.matched_hidden<=cfg.hidden:
+        raise ValueError('Matched controls require a validation-selected width between 1 and hidden.')
+    model_cfg=replace(cfg,hidden=cfg.matched_hidden) if method in {'matched_dense','matched_static_sparse'} else cfg
+    model=build_model(architecture,model_cfg);layer=model.get_layer('sparse_hidden');next_layer=model.get_layer('hidden2')
     weight_hash=hashlib.sha256(b''.join(v.numpy().tobytes() for v in model.trainable_variables)).hexdigest()
     rng=np.random.default_rng(seed+1000)
-    mask=initial_mask(tuple(layer.kernel.shape),cfg,rng)
-    if method in {'dense','lasso','group_lasso'}:mask[:]=1
+    mask=initial_mask(tuple(layer.kernel.shape),model_cfg,rng)
+    if method in {'dense','lasso','group_lasso','matched_dense','magnitude_prune'}:mask[:]=1
     layer.mask.assign(mask);layer.kernel.assign(layer.kernel*mask)
     mask_hash=hashlib.sha256(mask.tobytes()).hexdigest();initial_budget=int(mask.sum());total=mask.size
     optimizer=keras.optimizers.Adam(cfg.learning_rate)
+    # Freeze removed neuron biases as well as connections during prune-and-finetune.
+    active_columns=tf.Variable(np.ones(layer.units,dtype='float32'),trainable=False)
     bce=keras.losses.BinaryCrossentropy();controller=StableBudgetController(cfg)
     @tf.function(input_signature=[tf.TensorSpec((None,600,1),tf.float32),tf.TensorSpec((None,1),tf.float32)])
     def step(x,y):
@@ -359,13 +398,18 @@ def run_one(architecture,method,target,seed,data,cfg,out,validation_only=False):
         gradients=tape.gradient(loss,model.trainable_variables)
         optimizer.apply_gradients(zip(gradients,model.trainable_variables))
         prox_step(layer,next_layer,method,cfg.learning_rate,cfg)
+        layer.bias.assign(layer.bias*active_columns)
         return loss
     infer=infer_function(model)
     tx,ty=data['train']['x'],data['train']['y'][:,target:target+1]
     vx,vy=data['validation']['x'],data['validation']['y'][:,target:target+1]
     shuffle=np.random.default_rng(seed+2000)
     candidates=[];history=[];training_time=0.;topology_time=0.;validation_time=0.
+    prune_epoch=min(cfg.epochs-1,max(0,int(cfg.epochs*cfg.pruning_fraction)))
     for epoch in range(cfg.epochs):
+        if method=='magnitude_prune' and epoch==prune_epoch:
+            allowed=prune_columns(layer,next_layer,cfg.matched_hidden,optimizer if optimizer.built else None)
+            active_columns.assign(allowed.astype('float32'))
         order=shuffle.permutation(len(tx));weighted=0.;start=time.perf_counter()
         for a in range(0,len(tx),cfg.batch_size):
             ix=order[a:a+cfg.batch_size];weighted+=float(step(tx[ix],ty[ix]).numpy())*len(ix)
@@ -376,7 +420,7 @@ def run_one(architecture,method,target,seed,data,cfg,out,validation_only=False):
         # Pareto candidates: retain only improvements in validation BCE OR size.
         state=dict(epoch=epoch+1,val_bce=val['bce'],units=units,budget=budget,weights=model.get_weights())
         dominated=any(c['val_bce']<=state['val_bce'] and c['budget']<=budget and c['units']<=units for c in candidates)
-        if not dominated:
+        if not dominated and (method!='magnitude_prune' or epoch>=prune_epoch):
             candidates=[c for c in candidates if not(state['val_bce']<=c['val_bce'] and budget<=c['budget'] and units<=c['units'])]
             candidates.append(state)
         desired=budget;action='none';grown=0;gradient_seconds=0.;start=time.perf_counter()
@@ -392,6 +436,9 @@ def run_one(architecture,method,target,seed,data,cfg,out,validation_only=False):
         topology_elapsed=time.perf_counter()-start;topology_time+=topology_elapsed
         history.append(dict(epoch=epoch+1,train_bce=weighted/len(tx),val_bce=val['bce'],val_f1_at_05=val['f1'],
             budget=budget,density=budget/total,active_neurons=units,next_budget=desired,decision=action,regrown=grown,
+            controller_best_bce=float(controller.best) if np.isfinite(controller.best) else None,
+            controller_good=controller.good,controller_bad=controller.bad,
+            actual_next_budget=int(layer.mask.numpy().sum()),
             training_seconds=elapsed,topology_seconds=topology_elapsed,gradient_seconds=gradient_seconds))
     best=min(c['val_bce'] for c in candidates)
     eligible=[c for c in candidates if c['val_bce']<=best+cfg.checkpoint_tolerance]
@@ -404,9 +451,15 @@ def run_one(architecture,method,target,seed,data,cfg,out,validation_only=False):
     prob=predict(infer,testx,cfg.batch_size);scores=metrics(testy,prob,threshold)
     native,units=compact_model(model);native_infer=infer_function(native)
     native_prob=predict(native_infer,testx,cfg.batch_size)
-    np.testing.assert_allclose(prob,native_prob,rtol=1e-5,atol=2e-6)
+    max_abs_error=float(np.max(np.abs(prob-native_prob)))
+    np.testing.assert_allclose(prob,native_prob,rtol=cfg.compaction_rtol,atol=cfg.compaction_atol)
+    threshold_disagreements=int(np.count_nonzero((prob>=threshold)!=(native_prob>=threshold)))
+    if threshold_disagreements:
+        raise ValueError('Compaction changed thresholded predictions; deployment is not equivalent.')
     batch=testx[:min(cfg.batch_size,len(testx))]
     median,p95=latency(native_infer,batch,cfg.latency_repeats)
+    single_median,single_p95=latency(native_infer,testx[:1],cfg.latency_repeats)
+    original_median,original_p95=latency(infer,batch,cfg.latency_repeats)
     # Common perturbations across methods: labels remain unchanged, no retuning.
     robustness={}
     noise_rng=np.random.default_rng(seed+target*100+9000)
@@ -415,9 +468,24 @@ def run_one(architecture,method,target,seed,data,cfg,out,validation_only=False):
         stress_prob=predict(native_infer,testx+amplitude*noise,cfg.batch_size)
         robustness['noise_'+str(amplitude).replace('.','p')+'_f1']=f1_only(testy,stress_prob,threshold)
     logical,dense=mac_counts(model);_,native_macs=mac_counts(native)
-    model_bytes=sum(v.numpy().nbytes for v in model.weights)
-    native_bytes=sum(v.numpy().nbytes for v in native.weights)
+    original_storage=storage_accounting(model);native_storage=storage_accounting(native)
+    model_bytes=original_storage['total_bytes'];native_bytes=native_storage['total_bytes']
+    label_schema=data.get('audit',{}).get('label_schema',{})
+    label=next((r for r in label_schema.get('labels',[]) if r['target']==target),{})
     row=dict(architecture=architecture,method=method,target=target,seed=seed,mode=cfg.mode,
+        target_name=label.get('name',f'T{target}'),label_source_verified=label.get('source_verified',False),
+        model_hidden=model_cfg.hidden,matched_reference_neurons=cfg.matched_hidden,
+        train_positive_rate=float(ty.mean()),validation_positive_rate=float(vy.mean()),test_positive_rate=float(testy.mean()),
+        compaction_max_abs_error=max_abs_error,compaction_rtol=cfg.compaction_rtol,compaction_atol=cfg.compaction_atol,
+        compaction_threshold_disagreements=threshold_disagreements,
+        original_mask_bytes=original_storage['mask_bytes'],compact_mask_bytes=native_storage['mask_bytes'],
+        compact_dtype=','.join(native_storage['dtypes']),
+        compact_single_median_ms=single_median,compact_single_p95_ms=single_p95,
+        original_latency_median_ms=original_median,original_latency_p95_ms=original_p95,
+        compact_amortized_ms_per_window=median/len(batch),
+        compact_windows_per_second=1000*len(batch)/max(median,1e-12),
+        nominal_batch_updates=cfg.epochs*int(np.ceil(len(tx)/cfg.batch_size)),
+        pruning_epoch=(prune_epoch+1 if method=='magnitude_prune' else 0),
         initial_weight_hash=weight_hash,initial_mask_hash=mask_hash,selected_epoch=chosen['epoch'],
         learning_rate=cfg.learning_rate,l1_strength=cfg.l1_strength,l21_strength=cfg.l21_strength,
         selected_neurons=units,initial_budget=initial_budget,selected_budget=chosen['budget'],threshold=threshold,
@@ -430,7 +498,16 @@ def run_one(architecture,method,target,seed,data,cfg,out,validation_only=False):
     save_csv(out/(stem+'_history.csv'),history)
     np.savez_compressed(out/(stem+'_predictions.npz'),labels=testy,probabilities=prob,threshold=threshold,
         indices=data['test']['indices'],groups=data['test']['groups'])
-    if cfg.mode!='smoke':native.save(out/(stem+'_compact.keras'))
+    native_path=out/(stem+'_compact.keras');native.save(native_path)
+    reloaded=keras.models.load_model(native_path)
+    reloaded_prob=predict(infer_function(reloaded),testx,cfg.batch_size)
+    np.testing.assert_allclose(native_prob,reloaded_prob,rtol=cfg.compaction_rtol,atol=cfg.compaction_atol)
+    if np.any((reloaded_prob>=threshold)!=(native_prob>=threshold)):
+        raise ValueError('Reload changed thresholded deployment predictions.')
+    row['compact_archive_bytes']=native_path.stat().st_size
+    row['reload_max_abs_error']=float(np.max(np.abs(native_prob-reloaded_prob)))
+    (out/(stem+'_storage.json')).write_text(json.dumps(dict(original=original_storage,compact=native_storage,
+        archive_bytes=row['compact_archive_bytes'],accounting=METRIC_PROTOCOL['weight_bytes']),indent=2))
     if method in {'fixed_set','gradient_set','static_sparse','set_lasso','fixed_group_set'}:
         assert all(h['budget']==initial_budget for h in history)
     assert all(np.isfinite(v) for v in row.values() if isinstance(v,(float,int)))
@@ -451,6 +528,9 @@ def paired_statistics(rows,out,cfg):
                     a=np.load(out/f'{architecture}_{candidate}_t{target}_s{seed}_predictions.npz')
                     b=np.load(out/f'{architecture}_{baseline}_t{target}_s{seed}_predictions.npz')
                     assert np.array_equal(a['labels'],b['labels']) and np.array_equal(a['indices'],b['indices'])
+                    if not np.array_equal(a['groups'],b['groups']):raise ValueError('Paired groups differ between methods.')
+                    if pairs and (not np.array_equal(a['groups'],pairs[0][-1]) or not np.array_equal(a['labels'].ravel(),pairs[0][0])):
+                        raise ValueError('Paired test labels/groups differ across seeds.')
                     y=a['labels'].ravel();pa=a['probabilities'].ravel();pb=b['probabilities'].ravel()
                     ta=float(a['threshold']);tb=float(b['threshold']);groups=a['groups']
                     pairs.append((y,pa,pb,ta,tb,groups))
@@ -469,8 +549,12 @@ def paired_statistics(rows,out,cfg):
                     bootstrap.append(float(np.mean(deltas)))
                 # Exact sign-flip test on paired seed effects; descriptive for small N.
                 observed=abs(float(np.mean(seed_deltas)))
-                permutations=[abs(float(np.mean(np.array(signs)*seed_deltas))) for signs in itertools.product([-1,1],repeat=len(seed_deltas))]
-                pvalue=float(np.mean(np.array(permutations)>=observed-1e-12))
+                if len(seed_deltas)<=16:
+                    permutations=[abs(float(np.mean(np.array(signs)*seed_deltas))) for signs in itertools.product([-1,1],repeat=len(seed_deltas))]
+                    pvalue=float(np.mean(np.array(permutations)>=observed-1e-12))
+                else:
+                    permutations=np.abs((rng.choice([-1,1],size=(10000,len(seed_deltas)))*seed_deltas).mean(1))
+                    pvalue=float((1+np.count_nonzero(permutations>=observed-1e-12))/(len(permutations)+1))
                 comparisons.append(dict(architecture=architecture,target=target,candidate=candidate,baseline=baseline,
                     seeds=len(seed_deltas),test_groups=len(unique),mean_f1_difference=float(np.mean(seed_deltas)),
                     bootstrap_ci_low=float(np.quantile(bootstrap,.025)),bootstrap_ci_high=float(np.quantile(bootstrap,.975)),
@@ -500,6 +584,27 @@ def create_report(rows,histories,out,cfg):
             item[key+'_std']=float(np.std(values,ddof=1)) if len(values)>1 else 0.
         aggregate.append(item)
     save_csv(out/'aggregate_metrics.csv',aggregate)
+    save_csv(out/'macro_metrics.csv',macro_summary(rows,cfg.targets))
+    macro_pairs=paired_macro_statistics(rows,cfg.targets,cfg.bootstrap_repeats)
+    if macro_pairs:save_csv(out/'paired_macro_uncertainty.csv',macro_pairs)
+    convergence=[]
+    for key,history in histories.items():
+        architecture,method,target,seed=key
+        stem=f'{architecture}_{method}_t{target}_s{seed}'
+        epochs=[h['epoch'] for h in history]
+        fig,axes=plt.subplots(1,2,figsize=(9,3))
+        axes[0].plot(epochs,[h['train_bce'] for h in history],label='Training minibatch BCE (dropout on)')
+        axes[0].plot(epochs,[h['val_bce'] for h in history],label='Validation BCE (dropout off)')
+        axes[0].set(xlabel='Epoch',ylabel='BCE');axes[0].legend(fontsize=7)
+        axes[1].plot(epochs,[h['active_neurons'] for h in history],label='Retained neurons')
+        axes[1].set(xlabel='Epoch',ylabel='Neurons');axes[1].legend(fontsize=7)
+        fig.suptitle(stem);fig.tight_layout();fig.savefig(out/(stem+'_learning_curves.png'),dpi=120);plt.close(fig)
+        best_epoch=min(history,key=lambda h:h['val_bce'])['epoch']
+        convergence.append(dict(architecture=architecture,method=method,target=target,seed=seed,
+            best_validation_epoch=best_epoch,epochs=len(history),best_in_last_fifth=best_epoch>=max(1,.8*len(history)),
+            interpretation='Late best epoch is a diagnostic, not a convergence test.'))
+    save_csv(out/'convergence_diagnostics.csv',convergence)
+    (out/'metric_protocol.json').write_text(json.dumps(METRIC_PROTOCOL,indent=2))
     colors=plt.get_cmap('tab20')
     fig,axes=plt.subplots(len(cfg.architectures),len(cfg.targets),figsize=(4*len(cfg.targets),4*len(cfg.architectures)),squeeze=False)
     for i,architecture in enumerate(cfg.architectures):
@@ -524,7 +629,8 @@ def create_report(rows,histories,out,cfg):
         'Timing reflects this host only; independent hardware replication is required.']
     report=dict(mode=cfg.mode,completed_runs=len(rows),seeds=list(cfg.seeds),publication_ready=False,
                 limitations=limitations,primary_metric='Validation-thresholded test F1; also report F1 at 0.5.',
-                checkpoints='Minimum size among Pareto candidates within 0.005 validation BCE of best; no test selection.')
+                checkpoints=f'Minimum size among Pareto candidates within {cfg.checkpoint_tolerance} validation BCE of best; no test selection.',
+                low_seed_count=len(cfg.seeds)<10,energy_measured=False)
     (out/'research_status.json').write_text(json.dumps(report,indent=2))
     return aggregate
 
@@ -547,10 +653,24 @@ def tune_config(architecture,method,target,seed,data,cfg,out):
 
 def run_experiment(data_dir,out,cfg=None,metadata_path=None,resume=True):
     cfg=cfg or Config();out=Path(out);out.mkdir(parents=True,exist_ok=True)
+    if set(cfg.methods)&MATCHED and 'adaptive_group_set' not in cfg.methods:
+        raise ValueError('Matched controls require adaptive_group_set as a validation-only size reference.')
+    if cfg.epochs<1 or not cfg.seeds or len(set(cfg.seeds))!=len(cfg.seeds):raise ValueError('Use positive epochs and unique seeds.')
+    if not cfg.targets or len(set(cfg.targets))!=len(cfg.targets) or not set(cfg.targets)<=set(range(4)):
+        raise ValueError('Use unique targets from 0,1,2,3.')
+    if not cfg.methods or len(set(cfg.methods))!=len(cfg.methods) or not set(cfg.methods)<=set(METHODS):
+        raise ValueError('Use unique supported methods.')
+    if cfg.latency_repeats<1 or cfg.bootstrap_repeats<1 or cfg.search_trials<1:
+        raise ValueError('Timing, bootstrap and search repeat counts must be positive.')
+    if not 0<=cfg.pruning_fraction<1:raise ValueError('pruning_fraction must be in [0,1).')
     data=load_data(data_dir,cfg,metadata_path)
     configuration=dict(config=asdict(cfg),data=data['audit'],tensorflow=tf.__version__,
         python=sys.version,platform=platform.platform(),devices=[d.name for d in tf.config.list_physical_devices()],
-        source_sha256=sha_file(__file__))
+        source_sha256=sha_file(__file__),protocol_sha256=sha_file(Path(__file__).with_name('protocol.py')),
+        metric_protocol=METRIC_PROTOCOL,keras=keras.__version__,numpy=np.__version__,
+        processor=platform.processor(),machine=platform.machine(),
+        intra_op_threads=tf.config.threading.get_intra_op_parallelism_threads(),
+        inter_op_threads=tf.config.threading.get_inter_op_parallelism_threads())
     config_path=out/'config.json'
     # Never mix old results with a changed protocol, data, or implementation.
     if config_path.exists() and json.loads(config_path.read_text())!=json.loads(json.dumps(configuration)):
@@ -562,23 +682,41 @@ def run_experiment(data_dir,out,cfg=None,metadata_path=None,resume=True):
                       **{f'label_{t}':int(labels[j,t]) for t in range(4)})
                  for j,(index,group,fingerprint) in enumerate(zip(indices,data[name]['groups'],data[name]['input_hashes']))]
         save_csv(out/(name+'_manifest.csv'),records)
+    prevalence=[]
+    for name in ['train','validation','test']:
+        for label in data['audit']['label_schema']['labels']:
+            y=data[name]['y'][:,label['target']]
+            prevalence.append(dict(split=name,target=label['target'],intended_appliance=label['name'],
+                label_source_verified=label.get('source_verified',False),n=len(y),positive=int(y.sum()),
+                negative=int(len(y)-y.sum()),positive_rate=float(y.mean())))
+    save_csv(out/'label_prevalence.csv',prevalence)
     rows=[];histories={}
     for architecture,target,seed in itertools.product(cfg.architectures,cfg.targets,cfg.seeds):
         # Counterbalance execution order instead of timing every baseline first.
         methods=list(cfg.methods);np.random.default_rng(seed+target*17).shuffle(methods)
+        if set(methods)&MATCHED:
+            # Run the size reference first. Controls use only its validation-selected
+            # width, never F1/test probabilities, to determine their architecture.
+            methods.remove('adaptive_group_set');methods.insert(0,'adaptive_group_set')
+        reference=None
         paired=[]
         for method in methods:
             stem=f'{architecture}_{method}_t{target}_s{seed}';cache=out/(stem+'_run.json')
             if resume and cache.exists():
                 saved=json.loads(cache.read_text());row,history=saved['metrics'],saved['history']
             else:
-                run_cfg=tune_config(architecture,method,target,seed,data,cfg,out)
+                control_cfg=replace(cfg,matched_hidden=reference['selected_neurons']) if method in MATCHED else cfg
+                run_cfg=tune_config(architecture,method,target,seed,data,control_cfg,out)
                 row,history=run_one(architecture,method,target,seed,data,run_cfg,out)
                 cache.write_text(json.dumps(dict(metrics=row,history=history),indent=2))
+            if method=='adaptive_group_set':reference=row
+            if method in MATCHED:
+                if row['compact_dense_macs']!=reference['compact_dense_macs'] or row['compact_weight_bytes']!=reference['compact_weight_bytes']:
+                    raise ValueError('Control did not match reference deployed MACs and weight bytes.')
             rows.append(row);paired.append(row);histories[(architecture,method,target,seed)]=history
             save_csv(out/'metrics.csv',rows)
-        hashes={r['initial_weight_hash'] for r in paired};assert len(hashes)==1
-        sparse_hashes={r['initial_mask_hash'] for r in paired if r['method'] not in {'dense','lasso','group_lasso'}}
+        hashes={r['initial_weight_hash'] for r in paired if r['method'] not in MATCHED};assert len(hashes)==1
+        sparse_hashes={r['initial_mask_hash'] for r in paired if r['method'] not in {'dense','lasso','group_lasso'}|MATCHED}
         assert len(sparse_hashes)<=1
     create_report(rows,histories,out,cfg)
     paired_statistics(rows,out,cfg)
@@ -594,9 +732,19 @@ if __name__=='__main__':
     parser.add_argument('--seeds',type=int,nargs='+')
     parser.add_argument('--architectures',choices=['DNN','CNN'],nargs='+')
     parser.add_argument('--methods',choices=METHODS,nargs='+')
-    parser.add_argument('--targets',type=int,nargs='+')
+    parser.add_argument('--targets',type=int,choices=range(4),nargs='+')
+    parser.add_argument('--matched-controls',action='store_true')
+    parser.add_argument('--label-schema',type=str)
+    parser.add_argument('--require-verified-labels',action='store_true')
+    parser.add_argument('--search-trials',type=int)
+    parser.add_argument('--latency-repeats',type=int)
+    parser.add_argument('--bootstrap-repeats',type=int)
     args=parser.parse_args();cfg=Config.full() if args.mode=='full' else Config.pilot() if args.mode=='pilot' else Config()
     for name in ['epochs','seeds','architectures','methods','targets']:
         value=getattr(args,name)
         if value is not None:setattr(cfg,name,tuple(value) if isinstance(value,list) else value)
+    cfg.label_schema=args.label_schema;cfg.require_verified_labels=args.require_verified_labels
+    for name in ['search_trials','latency_repeats','bootstrap_repeats']:
+        if getattr(args,name) is not None:setattr(cfg,name,getattr(args,name))
+    if args.matched_controls:cfg.methods=tuple(dict.fromkeys((*cfg.methods,'adaptive_group_set',*sorted(MATCHED))))
     run_experiment(args.data_dir,args.out,cfg,args.metadata)

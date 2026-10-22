@@ -3,7 +3,7 @@ __pycache__/
 .ipynb_checkpoints/
 .venv/
 venv/
-runs/
+**/runs/
 *.keras
 *.zip
 .DS_Store

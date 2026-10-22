@@ -1,0 +1,10 @@
+{
+  "status": "intended_order_from_original_notebook_not_source_verified",
+  "source": "Commit 93c8d51, SET_with_UKDALE.ipynb cells 7, 28 and 31: positional slices 0:1 through 3:4 and device names. The repository does not include the CSV generation records.",
+  "labels": [
+    {"target": 0, "csv_column": "V1", "name": "washing machine", "source_verified": false},
+    {"target": 1, "csv_column": "V2", "name": "dishwasher", "source_verified": false},
+    {"target": 2, "csv_column": "V3", "name": "refrigerator", "source_verified": false},
+    {"target": 3, "csv_column": "V4", "name": "microwave", "source_verified": false}
+  ]
+}
